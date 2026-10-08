@@ -1,0 +1,94 @@
+.logo-orbit-disc {
+  background-color: rgba(18, 18, 22, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.logo-orbit-disc.logo-orbit-drop {
+  background-color: rgba(30, 30, 36, 0.85);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+}
+.logo-orbit-item {
+  padding: 8px;
+  border-radius: 16px;
+  color: #f2f2f2;
+  font-size: 10pt;
+  text-align: center;
+}
+.logo-orbit-item:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+.logo-orbit-item StLabel {
+  padding-top: 4px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.logo-orbit-center {
+  border-radius: 999px;
+  background-color: transparent;
+}
+
+/* Folder peek: side panel listing a folder's contents. */
+.logo-orbit-peek {
+  background-color: rgba(18, 18, 22, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  padding: 8px;
+  color: #f2f2f2;
+  font-size: 10pt;
+}
+.logo-orbit-peek-header,
+.logo-orbit-peek-row {
+  border-radius: 8px;
+  color: #f2f2f2;
+}
+.logo-orbit-peek-header {
+  padding: 6px 8px;
+}
+.logo-orbit-peek-row {
+  padding: 5px 8px;
+}
+.logo-orbit-peek-header:hover,
+.logo-orbit-peek-row:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+.logo-orbit-peek-header StBoxLayout StBoxLayout,
+.logo-orbit-peek-row StLabel {
+  padding-left: 10px;
+}
+.logo-orbit-peek-title {
+  font-weight: bold;
+}
+.logo-orbit-peek-count,
+.logo-orbit-peek-note {
+  color: rgba(242, 242, 242, 0.6);
+  font-size: 9pt;
+}
+.logo-orbit-peek-note {
+  padding: 12px 8px;
+}
+.logo-orbit-peek-sep {
+  height: 1px;
+  margin: 4px 0;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+.logo-orbit-peek-back {
+  padding: 8px;
+  margin-right: 2px;
+  border-radius: 8px;
+  color: #f2f2f2;
+}
+.logo-orbit-peek-back:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Black hole: the orbit after it has been held open for a minute. */
+.logo-orbit-void {
+  background-color: rgba(0, 0, 0, 0.94);
+  border: 1px solid rgba(255, 170, 90, 0.35);
+  box-shadow: 0 0 48px rgba(120, 60, 200, 0.45);
+}
+.logo-orbit-hole {
+  background-color: #000000;
+  border: 2px solid rgba(255, 190, 120, 0.9);
+  box-shadow: 0 0 36px 10px rgba(255, 140, 50, 0.65);
+}

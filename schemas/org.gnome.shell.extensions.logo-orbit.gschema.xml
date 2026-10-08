@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.logo-orbit" path="/org/gnome/shell/extensions/logo-orbit/">
+    <key name="black-hole-enabled" type="b">
+      <default>true</default>
+      <summary>Collapse the orbit into a black hole</summary>
+    </key>
+    <key name="black-hole-delay" type="i">
+      <range min="5" max="3600"/>
+      <default>60</default>
+      <summary>Seconds the orbit stays open before it becomes a black hole</summary>
+    </key>
+    <key name="black-hole-duration" type="d">
+      <range min="0.3" max="20.0"/>
+      <default>1.8</default>
+      <summary>Seconds each item takes to spiral into the hole</summary>
+    </key>
+  </schema>
+</schemalist>

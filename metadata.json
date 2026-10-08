@@ -1,0 +1,8 @@
+{
+  "uuid": "logo-orbit@usama",
+  "name": "Logo Orbit",
+  "description": "Hover the Ubuntu logo on your wallpaper to reveal a circle of your Desktop folders.",
+  "shell-version": ["48", "49", "50"],
+  "settings-schema": "org.gnome.shell.extensions.logo-orbit",
+  "version": 17
+}

@@ -1,0 +1,5 @@
+schemas/gschemas.compiled
+*.zip
+.vscode/
+.idea/
+*~
