@@ -3,6 +3,8 @@
 Hover the Ubuntu logo on your wallpaper to open an orbit of your Desktop
 files and folders.
 
+![The orbit opening when the pointer rests on the logo](docs/open.gif)
+
 ## Features
 
 - **Your Desktop in a circle** — everything in `~/Desktop` lives in the orbit
@@ -16,12 +18,20 @@ files and folders.
   - Drag a desktop icon, or files from Files, onto the open orbit to add them.
     Files from other folders are moved onto the Desktop; name clashes get
     " (2)", " (3)", ...
+
+  ![Dragging an item out of the orbit onto the desktop](docs/drag-drop.gif)
+
 - **Folder peek** — rest the pointer on a folder for 2 s and a side panel
   lists what's inside. Click subfolders to browse into them, or files to open
   them.
+
+  ![Resting on a folder opens a side panel with its contents](docs/peek.gif)
+
 - **Black hole** — leave the orbit open for a minute and it collapses: every
   item spirals into the logo, then the orbit closes. It's only an animation;
   nothing on disk changes.
+
+  ![Items spiralling into the logo as the orbit collapses](docs/black-hole.gif)
 
 ## Usage
 
@@ -41,16 +51,23 @@ screen.
 
 ## Requirements
 
-- GNOME Shell 48, 49 or 50
+- GNOME Shell 50 (tested on Ubuntu 26.04, Wayland). Older versions are not
+  listed because they haven't been tested.
 - The Desktop Icons NG (DING) extension, which Ubuntu ships by default, for
   the desktop-icon features
 
 ## Install
 
+### From extensions.gnome.org
+
+Once published, install it from
+[extensions.gnome.org](https://extensions.gnome.org/) or the Extension
+Manager app.
+
+### From a release ZIP
+
 ```sh
-git clone https://github.com/Usama441/gnome-shell-extension-logo-orbit.git \
-  ~/.local/share/gnome-shell/extensions/logo-orbit@usama
-glib-compile-schemas ~/.local/share/gnome-shell/extensions/logo-orbit@usama/schemas
+gnome-extensions install --force logo-orbit@usama.shell-extension.zip
 ```
 
 Log out and back in (on Wayland), then enable it:
@@ -58,6 +75,16 @@ Log out and back in (on Wayland), then enable it:
 ```sh
 gnome-extensions enable logo-orbit@usama
 ```
+
+### From source
+
+```sh
+git clone https://github.com/Usama441/gnome-shell-extension-logo-orbit.git \
+  ~/.local/share/gnome-shell/extensions/logo-orbit@usama
+glib-compile-schemas ~/.local/share/gnome-shell/extensions/logo-orbit@usama/schemas
+```
+
+Then log out and back in and enable it as above.
 
 ## Settings
 
@@ -95,6 +122,72 @@ rm -rf ~/.local/share/gnome-shell/extensions/logo-orbit@usama \
 
 Disabling first restores your `~/Desktop/.hidden`, so all desktop icons
 come back.
+
+## Troubleshooting
+
+- **The logo doesn't appear.** Check that the extension is enabled and
+  active: `gnome-extensions info logo-orbit@usama`. On a wallpaper other
+  than Snowy Ubuntu, look in the centre of the main screen.
+- **The orbit doesn't open.** It only opens when nothing but the desktop is
+  under the pointer — move windows out of the way, and close the overview.
+- **Items show on the desktop and in the circle.** The desktop icons cache
+  `~/Desktop/.hidden` for a few seconds; wait about 10 s.
+- **Desktop icons are missing after uninstalling.** Disable the extension
+  before removing it so it can restore `~/Desktop/.hidden`. If you removed
+  it first, delete the extra names from `~/Desktop/.hidden` by hand.
+- **Errors.** Follow the shell log while you reproduce the problem, and
+  include the output in a bug report:
+
+  ```sh
+  journalctl --user -f -o cat /usr/bin/gnome-shell | grep -i 'logo orbit'
+  ```
+
+## Development
+
+The extension is plain GJS — no build step.
+
+1. Clone the repository into
+   `~/.local/share/gnome-shell/extensions/logo-orbit@usama` (or symlink it
+   there).
+2. Compile the settings schema:
+   `glib-compile-schemas schemas`.
+3. Test in a nested GNOME Shell so your real session isn't affected
+   (needs the `mutter-devkit` helper; on Ubuntu it comes from the
+   `mutter-dev-bin` package):
+
+   ```sh
+   dbus-run-session gnome-shell --devkit --wayland
+   ```
+
+   On Wayland, the running session only loads changed code after you log
+   out and back in.
+4. Build the upload ZIP:
+
+   ```sh
+   mkdir -p dist
+   gnome-extensions pack --force --extra-source=logo.svg --extra-source=LICENSE --out-dir=dist .
+   ```
+
+   This writes `dist/logo-orbit@usama.shell-extension.zip`.
+
+## Wallpapers
+
+The [`wallpapers`](wallpapers) folder has a few dark backgrounds that suit
+the orbit. They are photos from [Unsplash](https://unsplash.com), used under
+the [Unsplash License](https://unsplash.com/license), by Adrien Olichon,
+Daniel Olah and Eastman Childs.
+
+## Credits
+
+Written by [Usama](https://github.com/Usama441). The Ubuntu logo is a
+trademark of Canonical Ltd.
+
+## License
+
+Logo Orbit is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 2 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).
 
 ## Changelog
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
 import GObject from 'gi://GObject';

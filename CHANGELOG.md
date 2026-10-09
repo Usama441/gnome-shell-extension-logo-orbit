@@ -3,6 +3,44 @@
 All notable changes to this extension are recorded here, newest first.
 The version number matches `"version"` in `metadata.json`.
 
+## [18] — 2026-10-09
+
+Preparing for extensions.gnome.org, plus a new edge for the disc.
+
+### Added
+- **Photon ring.** The disc's edge is now a glowing orange ring, like the
+  light round a black hole, with streaks and smoke slowly turning over it.
+  It spins up while the black hole swallows the items. When the orbit opens,
+  it bursts out past the disc and slows back down, and a shockwave races
+  out of the logo. It's drawn once and then only rotated. It stands still
+  when animations are turned off in GNOME's settings.
+
+### Fixed
+- **Disabling during a drag or a file move no longer re-hides items.**
+  Disabling the extension (or locking the screen) while dragging an item, or
+  while files dropped on the orbit were still being moved, could write the
+  circle's items back into `~/Desktop/.hidden` after it had been restored,
+  leaving them hidden from the desktop. Moves and drag reads are now
+  cancelled on disable, and late callbacks do nothing.
+- Closing animations that are interrupted by disabling no longer touch the
+  destroyed orbit.
+
+### Changed
+- **No more blocking file access.** Reading and writing `~/Desktop/.hidden`,
+  the state file and the Desktop folder, setting a drop position and
+  finding a free name for dropped files now happen in the background, so
+  the desktop never waits on the disk. Writes run strictly in order, and a
+  reload that overlaps a write reads `.hidden` again.
+- `state.json` is created readable by you only.
+- Widgets, timers and drag signals are cleaned up explicitly; the
+  extensions.gnome.org analyzer (Shexli) reports no issues.
+- Licensed under GPL-2.0-or-later (`LICENSE`).
+- Uses `orientation` instead of `St.BoxLayout`'s deprecated `vertical`
+  property, and `Pango.EllipsizeMode` instead of a bare number.
+- `metadata.json`: lists GNOME 50 only (the version actually tested), adds
+  the project URL and a fuller description.
+- README: install from ZIP, troubleshooting, development and credits.
+
 ## [17] — 2026-10-08
 
 ### Changed

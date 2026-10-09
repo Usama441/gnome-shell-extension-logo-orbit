@@ -1,6 +1,6 @@
 .logo-orbit-disc {
   background-color: rgba(18, 18, 22, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  /* No border: the photon ring (drawn in extension.js) is the edge. */
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 .logo-orbit-disc.logo-orbit-drop {
