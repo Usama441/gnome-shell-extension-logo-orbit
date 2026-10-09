@@ -51,7 +51,7 @@ screen.
 
 ## Requirements
 
-- GNOME Shell 45 – 50 (Ubuntu 24.04 LTS to 26.04, Fedora 39 – 42).
+- GNOME Shell 45 – 50 (Ubuntu 24.04 LTS to 26.04, Fedora 39 – 43).
   Tested on GNOME 50 (Ubuntu 26.04, Wayland).
 - The Desktop Icons NG (DING) extension, which Ubuntu ships by default, for
   the desktop-icon features
