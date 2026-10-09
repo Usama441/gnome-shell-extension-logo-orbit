@@ -3,6 +3,15 @@
 All notable changes to this extension are recorded here, newest first.
 The version number matches `"version"` in `metadata.json`.
 
+## [19] — 2026-10-09
+
+### Changed
+- **Supports GNOME 45 – 50** (Ubuntu 24.04 LTS and later) instead of only 50.
+  Vertical boxes fall back to `vertical` where `St.BoxLayout` has no
+  `orientation` (before GNOME 48), and the folder peek resets its scroll
+  position through `vscroll.adjustment` where `St.ScrollView` has no
+  `vadjustment` (GNOME 45).
+
 ## [18] — 2026-10-09
 
 Preparing for extensions.gnome.org, plus a new edge for the disc.
