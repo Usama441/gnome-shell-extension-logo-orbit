@@ -3,3 +3,5 @@ schemas/gschemas.compiled
 .vscode/
 .idea/
 *~
+dist/
+work/

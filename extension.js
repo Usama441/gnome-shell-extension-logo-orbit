@@ -1,7 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
@@ -50,6 +54,16 @@ const FALL_STAGGER_MS = 350;   // outer rings start falling this much later
 const HOLE_SCALE = 1.15;       // the hole's size relative to the logo
 const HOLE_CLOSE_MS = 900;     // once everything is swallowed, the hole closes into the logo
 
+// The disc's edge is a glowing photon ring whose streaks and smoke keep
+// turning. Speeds in degrees per second; the spin eases towards its target.
+const PHOTON_PAD = 64;         // room for the glow outside the disc
+const SPIN_IDLE = 24;          // while the orbit is open
+const SPIN_SWALLOW = 480;      // top speed while the black hole swallows the items
+const SPIN_BURST = 900;        // as the items burst out on opening, then slowing to idle
+const SPIN_EASE = 2.2;         // how quickly the speed follows its target (per second)
+const WISP_RATIO = 0.6;        // the smoke turns slower than the streaks
+const SHOCKWAVE_MS = 800;
+
 const PEEK_ATTRS = 'standard::name,standard::display-name,standard::icon,standard::type,' +
     'standard::is-hidden,standard::is-backup';
 
@@ -61,16 +75,143 @@ const HIDDEN_FILE = '.hidden';
 const POKE_NAME = 'logo-orbit-refresh~';
 const POKE_RETRY_MS = [6000, 11000];
 
+// File IO runs asynchronously so the shell never waits on the disk.
+Gio._promisify(Gio.File.prototype, 'load_contents_async');
+Gio._promisify(Gio.File.prototype, 'replace_contents_bytes_async', 'replace_contents_finish');
+Gio._promisify(Gio.File.prototype, 'delete_async');
+Gio._promisify(Gio.File.prototype, 'make_directory_async');
+Gio._promisify(Gio.File.prototype, 'query_info_async');
+Gio._promisify(Gio.File.prototype, 'set_attributes_async');
+Gio._promisify(Gio.File.prototype, 'enumerate_children_async');
+Gio._promisify(Gio.FileEnumerator.prototype, 'next_files_async');
+Gio._promisify(Gio.FileEnumerator.prototype, 'close_async');
+
+// Create `dir` and any missing parents (like `mkdir -p`).
+async function makeDirectories(dir) {
+    try {
+        await dir.make_directory_async(GLib.PRIORITY_DEFAULT, null);
+    } catch (e) {
+        if (isNotFound(e) && dir.get_parent()) {
+            await makeDirectories(dir.get_parent());
+            await makeDirectories(dir);
+        } else if (!(e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))) {
+            throw e;
+        }
+    }
+}
+
+const isCancelled = e => e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+const isNotFound = e => e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NOT_FOUND);
+
+// Errors only; nothing is logged in normal use.
+const logError = (what, e) => console.error(`Logo Orbit: ${what}`, e);
+
 const easeOutCubic = t => 1 - (1 - t) ** 3;
 const easeInCubic = t => t * t * t;
 const easeInOutCubic = t => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const easeOutBack = t => 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+
+// Repeatable pseudo-random numbers (mulberry32), so the ring looks the same on every repaint.
+function seededRandom(seed) {
+    return () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Stroke a curve from radius r0 at angle a0 to radius r1 at angle a0 + len.
+function spiralPath(cr, c, a0, len, r0, r1) {
+    const steps = Math.max(4, Math.ceil(len / 0.04));
+    for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const a = a0 + len * t, r = r0 + (r1 - r0) * t * t;
+        const x = c + r * Math.cos(a), y = c + r * Math.sin(a);
+        if (s === 0)
+            cr.moveTo(x, y);
+        else
+            cr.lineTo(x, y);
+    }
+    cr.stroke();
+}
+
+// Photon ring layers, drawn round centre `c` at radius `R`; `k` scales pixel sizes.
+
+// A soft orange glow with a thin hot core, brightest towards the top right.
+function drawGlow(cr, c, R, k) {
+    const r0 = R - 28 * k, r1 = R + PHOTON_PAD * 0.9 * k;
+    const at = r => (r - r0) / (r1 - r0);
+    const glow = new Cairo.RadialGradient(c, c, r0, c, c, r1);
+    glow.addColorStopRGBA(0, 1, 0.45, 0.1, 0);
+    glow.addColorStopRGBA(at(R - 7 * k), 1, 0.5, 0.12, 0.25);
+    glow.addColorStopRGBA(at(R), 1, 0.74, 0.38, 0.75);
+    glow.addColorStopRGBA(at(R + 6 * k), 1, 0.52, 0.14, 0.35);
+    glow.addColorStopRGBA(at(R + 24 * k), 0.85, 0.3, 0.1, 0.2);
+    glow.addColorStopRGBA(1, 0.5, 0.2, 0.5, 0);
+    cr.setSource(glow);
+    cr.arc(c, c, r1, 0, 2 * Math.PI);
+    cr.fill();
+
+    const core = new Cairo.LinearGradient(c + R, c - R, c - R, c + R);
+    core.addColorStopRGBA(0, 1, 0.96, 0.82, 1);
+    core.addColorStopRGBA(0.5, 1, 0.76, 0.4, 0.85);
+    core.addColorStopRGBA(1, 1, 0.5, 0.2, 0.5);
+    cr.setSource(core);
+    cr.setLineWidth(2.5 * k);
+    cr.arc(c, c, R, 0, 2 * Math.PI);
+    cr.stroke();
+}
+
+// Bright streaks of light along the ring, each curling slightly inwards.
+function drawStreaks(cr, c, R, k) {
+    const rand = seededRandom(7);
+    const colors = [[1, 0.88, 0.62], [1, 0.64, 0.24], [1, 0.46, 0.12]];
+    cr.setOperator(Cairo.Operator.ADD);
+    cr.setLineCap(Cairo.LineCap.ROUND);
+    for (let i = 0; i < 90; i++) {
+        const [red, green, blue] = colors[Math.floor(rand() * colors.length)];
+        cr.setSourceRGBA(red, green, blue, 0.15 + rand() * 0.5);
+        cr.setLineWidth((0.8 + rand() * 2.6) * k);
+        const r = R + (rand() - 0.6) * 22 * k;
+        spiralPath(cr, c, rand() * 2 * Math.PI, 0.15 + rand() * 0.9, r, r - rand() * 10 * k);
+    }
+}
+
+// Faint smoke spiralling from the ring towards the middle.
+function drawWisps(cr, c, R, k) {
+    const rand = seededRandom(23);
+    cr.setLineCap(Cairo.LineCap.ROUND);
+    for (let i = 0; i < 44; i++) {
+        const grey = 0.75 + rand() * 0.25;
+        cr.setSourceRGBA(grey, grey * 0.94, grey * 0.88, 0.015 + rand() * 0.035);
+        cr.setLineWidth((8 + rand() * 20) * k);
+        spiralPath(cr, c, rand() * 2 * Math.PI, 0.6 + rand() * 1.2,
+            R - (4 + rand() * 10) * k, R * (0.62 + rand() * 0.2));
+    }
+}
+
+// A square drawing `size` wide, painted by `draw` for a ring of `radius`
+// round its centre. It's drawn once and then only moved, scaled or turned.
+function photonLayer(size, radius, draw) {
+    const area = new St.DrawingArea({width: size, height: size, reactive: false});
+    area.set_pivot_point(0.5, 0.5);
+    area.connect('repaint', () => {
+        const cr = area.get_context();
+        const [w] = area.get_surface_size();
+        const k = w / size;
+        draw(cr, w / 2, radius * k, k);
+        cr.$dispose();
+    });
+    return area;
+}
 
 export default class LogoOrbitExtension extends Extension {
     enable() {
         this._desktopDir = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DESKTOP) ??
             GLib.build_filenamev([GLib.get_home_dir(), 'Desktop']);
         this._desktop = Gio.File.new_for_path(this._desktopDir);
+        this._active = true;      // false once disable() starts; late callbacks then do nothing
         this._visible = false;
         this._dwellId = 0;
         this._reloadId = 0;
@@ -88,6 +229,24 @@ export default class LogoOrbitExtension extends Extension {
         this._blackHole = false;  // the orbit has collapsed into a black hole
         this._holeTimeline = null;
         this._holeClosed = false; // the hole closed the orbit; don't reopen until the pointer leaves
+        this._photon = null;      // the photon ring round the disc
+        this._streaks = null;     // its turning layers
+        this._wisps = null;
+        this._spinTimeline = null; // turns them while the orbit is open
+        this._spinAngle = 0;
+        this._wispAngle = 0;
+        this._spinSpeed = SPIN_IDLE;
+        this._spinTarget = SPIN_IDLE;
+        // Cancels reads, file moves and drag reads still running when the extension is disabled.
+        this._cancellable = new Gio.Cancellable();
+        // Writes to `.hidden`, the state file and the Desktop run one after
+        // another, in order. Kept across disable/enable so the restore
+        // written by disable() lands before the next enable() reads `.hidden`.
+        this._ioQueue ??= Promise.resolve();
+        this._loaded = false;     // a reload has finished: `_userHidden` and `_hiddenLines` are known
+        this._hiddenLines = [];   // `.hidden` as last read or written
+        this._reloadSerial = 0;
+        this._hiddenVersion = 0;  // bumped by every `_writeHidden()`
         this._settings = this.getSettings();
         this._settingsId = this._settings.connect('changed', () => {
             if (this._visible && !this._blackHole)
@@ -103,8 +262,9 @@ export default class LogoOrbitExtension extends Extension {
         this._geom = null;
         this._logoIcon = Gio.FileIcon.new(this.dir.get_child('logo.svg'));
 
-        this._statePath = GLib.build_filenamev([GLib.get_user_data_dir(), 'logo-orbit', 'state.json']);
-        this._state = this._loadState();
+        this._stateFile = Gio.File.new_for_path(
+            GLib.build_filenamev([GLib.get_user_data_dir(), 'logo-orbit', 'state.json']));
+        this._state = {out: new Set(), ours: []};
 
         // Our own logo, drawn inside the background group so windows always cover it.
         // (A plain child of window_group ends up above every window once Mutter restacks.)
@@ -142,11 +302,14 @@ export default class LogoOrbitExtension extends Extension {
         });
         this._xdndEndId = Main.xdndHandler.connect('drag-end', () => this._onExtDragEnd());
 
+        // Reloads wait for the saved state: it says which `.hidden` entries are ours.
+        this._stateReady = this._loadState();
         this._reload();
         this._watch = getPointerWatcher().addWatch(50, (x, y) => this._onPointer(x, y));
     }
 
     disable() {
+        this._active = false;
         this._watch?.remove();
         this._watch = null;
         if (this._dwellId)
@@ -164,10 +327,13 @@ export default class LogoOrbitExtension extends Extension {
         this._holeTimeline = null;
         this._orbitAnim?.timeline.stop();
         this._orbitAnim = null;
+        this._stopSpin();
         this._blackHole = false;
         this._holeClosed = false;
         this._settings.disconnect(this._settingsId);
         this._settings = null;
+        this._cancellable.cancel();
+        this._cancellable = null;
         Main.xdndHandler.disconnect(this._xdndBeginId);
         Main.xdndHandler.disconnect(this._xdndEndId);
         if (this._dragMonitor)
@@ -182,82 +348,121 @@ export default class LogoOrbitExtension extends Extension {
         this._ifaceSettings?.disconnect(this._ifaceSettingsId);
         this._ifaceSettings = null;
 
-        // Give the circle's items back to the desktop.
-        this._writeHidden([...this._userHidden], []);
-        this._pokeNow();
-
-        this._overlay?.destroy();
+        // Tear the UI down first: destroying it can end a drag in progress,
+        // and its callbacks must not write `.hidden` again (see `_active`).
+        this._visible = false;
+        this._destroyOrbit();
+        this._overlay.destroy();
         this._overlay = null;
-        this._ring = null;
-        this._disc = null;
-        this._center = null;
-        this._logo?.destroy();
+        this._logo.destroy();
         this._logo = null;
+        this._logoIcon = null;
+
+        // Give the circle's items back to the desktop (queued; finishes in
+        // the background). Before the first reload we don't know `.hidden`
+        // yet and leave it alone.
+        if (this._loaded) {
+            this._writeHidden([...this._userHidden], []);
+            this._pokeNow();
+        }
+        this._loaded = false;
+
         this._items = [];
         this._geom = null;
-        this._visible = false;
         this._spinning = false;
         this._dragging = false;
         this._extDrag = false;
         this._dragUris = null;
     }
 
+    // --- File IO ---
+
+    // Run `task` (an async function) after every write queued before it.
+    // Tasks handle their own errors, so one failure doesn't stop the rest.
+    _queueIO(task) {
+        this._ioQueue = this._ioQueue.then(task);
+        return this._ioQueue;
+    }
+
     // --- Persistent state: which items were dragged out onto the desktop ---
 
-    _loadState() {
+    async _loadState() {
+        const cancellable = this._cancellable;
         const state = {out: [], ours: []};
         try {
-            const [, bytes] = GLib.file_get_contents(this._statePath);
+            // A save queued by the last disable() may still be running.
+            await this._ioQueue;
+            const [bytes] = await this._stateFile.load_contents_async(cancellable);
             Object.assign(state, JSON.parse(new TextDecoder().decode(bytes)));
-        } catch {
+        } catch (e) {
+            if (isCancelled(e))
+                return;
             // First run, or unreadable: everything starts in the circle.
+            if (!isNotFound(e))
+                logError('cannot read state', e);
         }
-        state.out = new Set(state.out);
-        return state;
+        if (cancellable.is_cancelled())
+            return;
+        this._state = {out: new Set(state.out), ours: state.ours};
     }
 
     _saveState() {
-        try {
-            GLib.mkdir_with_parents(GLib.path_get_dirname(this._statePath), 0o700);
-            GLib.file_set_contents(this._statePath, JSON.stringify({
-                out: [...this._state.out],
-                ours: this._state.ours,
-            }));
-        } catch (e) {
-            console.error('Logo Orbit: cannot save state', e);
-        }
+        const file = this._stateFile;
+        const bytes = new GLib.Bytes(new TextEncoder().encode(JSON.stringify({
+            out: [...this._state.out],
+            ours: this._state.ours,
+        })));
+        this._queueIO(async () => {
+            try {
+                await makeDirectories(file.get_parent());
+                // PRIVATE: readable by the user only, like the folder used to be.
+                await file.replace_contents_bytes_async(bytes, null, false,
+                    Gio.FileCreateFlags.PRIVATE | Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+            } catch (e) {
+                logError('cannot save state', e);
+            }
+        });
     }
 
     // --- Desktop `.hidden` file (keeps the user's own entries) ---
 
-    _readHidden() {
+    async _readHidden(cancellable) {
         try {
-            const [, bytes] = this._desktop.get_child(HIDDEN_FILE).load_contents(null);
+            const [bytes] = await this._desktop.get_child(HIDDEN_FILE).load_contents_async(cancellable);
             return new TextDecoder().decode(bytes).split('\n').filter(l => l.length > 0);
-        } catch {
+        } catch (e) {
+            if (!isNotFound(e))
+                throw e;
             return [];
         }
     }
 
     // Write `.hidden` as the user's entries plus the circle's; returns true if it changed.
+    // The write itself is queued.
     _writeHidden(user, circle) {
-        const current = this._readHidden();
+        const current = this._hiddenLines;
         const wanted = [...user, ...circle];
+        this._hiddenVersion++;
         this._state.ours = circle;
         this._saveState();
         if (wanted.join('\n') === current.join('\n'))
             return false;
+        this._hiddenLines = wanted;
         const file = this._desktop.get_child(HIDDEN_FILE);
-        try {
-            if (wanted.length > 0) {
-                file.replace_contents(new TextEncoder().encode(`${wanted.join('\n')}\n`),
-                    null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
-            } else if (current.length > 0) {
-                file.delete(null);
+        const bytes = new GLib.Bytes(new TextEncoder().encode(`${wanted.join('\n')}\n`));
+        this._queueIO(async () => {
+            try {
+                if (wanted.length > 0) {
+                    await file.replace_contents_bytes_async(bytes, null, false,
+                        Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+                } else if (current.length > 0) {
+                    await file.delete_async(GLib.PRIORITY_DEFAULT, null);
+                }
+            } catch (e) {
+                if (!isNotFound(e))
+                    logError('cannot update .hidden', e);
             }
-        } catch (e) {
-            console.error('Logo Orbit: cannot update .hidden', e);
-        }
+        });
         return true;
     }
 
@@ -277,13 +482,16 @@ export default class LogoOrbitExtension extends Extension {
 
     _pokeNow() {
         const file = this._desktop.get_child(POKE_NAME);
-        try {
-            // Must be non-empty: GJS passes an empty array as NULL and the write fails.
-            file.replace_contents(new Uint8Array([10]), null, false, Gio.FileCreateFlags.NONE, null);
-            file.delete(null);
-        } catch (e) {
-            console.error('Logo Orbit: cannot refresh desktop icons', e);
-        }
+        // Must be non-empty: GJS passes an empty array as NULL and the write fails.
+        const bytes = new GLib.Bytes(new Uint8Array([10]));
+        this._queueIO(async () => {
+            try {
+                await file.replace_contents_bytes_async(bytes, null, false, Gio.FileCreateFlags.NONE, null);
+                await file.delete_async(GLib.PRIORITY_DEFAULT, null);
+            } catch (e) {
+                logError('cannot refresh desktop icons', e);
+            }
+        });
     }
 
     // --- Logo geometry ---
@@ -344,31 +552,33 @@ export default class LogoOrbitExtension extends Extension {
 
     // --- Desktop items ---
 
-    _listDesktop() {
+    // Every visible Desktop entry (hidden ones filtered out by the caller).
+    async _listDesktop(cancellable) {
         const items = [];
+        const en = await this._desktop.enumerate_children_async(
+            'standard::name,standard::display-name,standard::icon,standard::type',
+            Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, cancellable);
         try {
-            const en = this._desktop.enumerate_children(
-                'standard::name,standard::display-name,standard::icon,standard::type',
-                Gio.FileQueryInfoFlags.NONE, null);
-            let info;
-            while ((info = en.next_file(null))) {
-                const name = info.get_name();
-                if (name.startsWith('.') || name.endsWith('~') || this._userHidden.has(name))
-                    continue;
-                items.push({
-                    name,
-                    label: info.get_display_name(),
-                    icon: info.get_icon(),
-                    isDir: info.get_file_type() === Gio.FileType.DIRECTORY,
-                    file: this._desktop.get_child(name),
-                });
+            for (;;) {
+                const infos = await en.next_files_async(100, GLib.PRIORITY_DEFAULT, cancellable);
+                if (infos.length === 0)
+                    break;
+                for (const info of infos) {
+                    const name = info.get_name();
+                    if (name.startsWith('.') || name.endsWith('~'))
+                        continue;
+                    items.push({
+                        name,
+                        label: info.get_display_name(),
+                        icon: info.get_icon(),
+                        isDir: info.get_file_type() === Gio.FileType.DIRECTORY,
+                        file: this._desktop.get_child(name),
+                    });
+                }
             }
-            en.close(null);
-        } catch (e) {
-            console.error('Logo Orbit: cannot read Desktop', e);
+        } finally {
+            en.close_async(GLib.PRIORITY_DEFAULT, null).catch(() => {});
         }
-        // Folders first, then files, alphabetically.
-        items.sort((a, b) => (b.isDir - a.isDir) || a.label.localeCompare(b.label));
         return items;
     }
 
@@ -389,10 +599,44 @@ export default class LogoOrbitExtension extends Extension {
         });
     }
 
-    _reload() {
+    // Re-read the Desktop and `.hidden`, update the circle and rebuild the orbit.
+    // Only the newest of overlapping reloads applies its result.
+    async _reload() {
+        const cancellable = this._cancellable;
+        if (!this._active || cancellable.is_cancelled())
+            return;
+        const serial = ++this._reloadSerial;
+        let hidden, items, version;
+        try {
+            await this._stateReady;
+            // Our own queued writes (e.g. a drop position) must land first.
+            await this._ioQueue;
+            version = this._hiddenVersion;
+            [hidden, items] = await Promise.all([
+                this._readHidden(cancellable),
+                this._listDesktop(cancellable),
+            ]);
+        } catch (e) {
+            if (!isCancelled(e))
+                logError('cannot read Desktop', e);
+            return;
+        }
+        if (cancellable.is_cancelled() || serial !== this._reloadSerial)
+            return;
+        // `.hidden` was rewritten while we read it, so what we read may not
+        // match `_state.ours` any more: read it again.
+        if (version !== this._hiddenVersion) {
+            await this._reload();
+            return;
+        }
+
         const ours = new Set(this._state.ours);
-        this._userHidden = new Set(this._readHidden().filter(n => !ours.has(n)));
-        this._items = this._listDesktop();
+        this._hiddenLines = hidden;
+        this._userHidden = new Set(hidden.filter(n => !ours.has(n)));
+        // Folders first, then files, alphabetically.
+        this._items = items.filter(i => !this._userHidden.has(i.name))
+            .sort((a, b) => (b.isDir - a.isDir) || a.label.localeCompare(b.label));
+        this._loaded = true;
 
         // Forget dragged-out items that were deleted or renamed.
         const names = new Set(this._items.map(i => i.name));
@@ -421,9 +665,7 @@ export default class LogoOrbitExtension extends Extension {
                     before.set(child._itemName, [px + child.x, py + child.y]);
             }
         }
-        this._overlay.destroy_all_children();
-        this._ring = null;
-        this._disc = null;
+        this._destroyOrbit();
         this._cancelPeekTimer();
 
         this._geom = this._logoGeometry();
@@ -473,6 +715,8 @@ export default class LogoOrbitExtension extends Extension {
         this._disc = new St.Widget({style_class: 'logo-orbit-disc', width: size, height: size});
         this._disc.set_style(`border-radius: ${size / 2}px;`);
         this._ring.add_child(this._disc);
+        this._photon = this._makePhoton(size);
+        this._ring.add_child(this._photon);
 
         // The logo stays visible in the middle of the orbit; clicking it opens the Desktop folder.
         const center = new St.Button({
@@ -510,6 +754,89 @@ export default class LogoOrbitExtension extends Extension {
         this._overlay.add_child(center);
     }
 
+    // Destroy the orbit's widgets (the disc and the items live in the ring).
+    _destroyOrbit() {
+        this._center?.destroy();
+        this._center = null;
+        this._disc?.destroy();
+        this._disc = null;
+        this._ring?.destroy();
+        this._ring = null;
+        this._photon = this._streaks = this._wisps = null;
+        // Anything else, such as the black hole's event horizon.
+        this._overlay.destroy_all_children();
+    }
+
+    // --- Photon ring: the glowing, turning edge of the disc ---
+
+    // A still glow with smoke and streaks of light turning over it (see `_spinFrame`).
+    _makePhoton(size) {
+        const d = size + 2 * PHOTON_PAD, radius = size / 2;
+        const photon = new St.Widget({
+            layout_manager: new Clutter.FixedLayout(),
+            width: d, height: d,
+            x: -PHOTON_PAD, y: -PHOTON_PAD,
+        });
+        photon.set_pivot_point(0.5, 0.5);
+        this._wisps = photonLayer(d, radius, drawWisps);
+        this._streaks = photonLayer(d, radius, drawStreaks);
+        this._wisps.rotation_angle_z = this._wispAngle;
+        this._streaks.rotation_angle_z = this._spinAngle;
+        photon.add_child(this._wisps);
+        photon.add_child(photonLayer(d, radius, drawGlow));
+        photon.add_child(this._streaks);
+        return photon;
+    }
+
+    // Keep the ring turning while the orbit is shown (not when animations are off).
+    _startSpin() {
+        if (this._spinTimeline || !St.Settings.get().enable_animations)
+            return;
+        this._spinTimeline = new Clutter.Timeline({actor: this._overlay, duration: 1000, repeat_count: -1});
+        this._spinTimeline.connect('new-frame', tl => this._spinFrame(tl.get_delta()));
+        this._spinTimeline.start();
+    }
+
+    _stopSpin() {
+        this._spinTimeline?.stop();
+        this._spinTimeline = null;
+        this._spinSpeed = this._spinTarget = SPIN_IDLE;
+    }
+
+    _spinFrame(ms) {
+        const dt = Math.min(ms, 100) / 1000;
+        this._spinSpeed += (this._spinTarget - this._spinSpeed) * (1 - Math.exp(-SPIN_EASE * dt));
+        this._spinAngle = (this._spinAngle + this._spinSpeed * dt) % 360;
+        this._wispAngle = (this._wispAngle + this._spinSpeed * WISP_RATIO * dt) % 360;
+        if (this._streaks)
+            this._streaks.rotation_angle_z = this._spinAngle;
+        if (this._wisps)
+            this._wisps.rotation_angle_z = this._wispAngle;
+    }
+
+    // A ring of light that races out of the logo past the disc's edge and fades.
+    _shockwave() {
+        const g = this._geom;
+        if (!g || !this._center || !St.Settings.get().enable_animations)
+            return;
+        const size = this._disc.width, d = size + 2 * PHOTON_PAD;
+        const wave = photonLayer(d, size / 2, drawGlow);
+        wave.set_position(-PHOTON_PAD, -PHOTON_PAD);
+        wave.set_scale(g.r / g.outer, g.r / g.outer);
+        this._overlay.insert_child_below(wave, this._center);
+        let gone = false;
+        wave.connect('destroy', () => (gone = true));
+        wave.ease({
+            scale_x: 1.3, scale_y: 1.3, opacity: 0,
+            duration: SHOCKWAVE_MS,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onStopped: () => {
+                if (!gone)
+                    wave.destroy();
+            },
+        });
+    }
+
     // Glide an item from its old screen position, or pop in a new one.
     _animateIn(btn, x, y, from, ox, oy) {
         const mode = Clutter.AnimationMode.EASE_OUT_QUAD;
@@ -526,10 +853,10 @@ export default class LogoOrbitExtension extends Extension {
     }
 
     _makeItem(item, x, y) {
-        const box = new St.BoxLayout({vertical: true, x_align: Clutter.ActorAlign.CENTER});
+        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_align: Clutter.ActorAlign.CENTER});
         box.add_child(new St.Icon({gicon: item.icon, icon_size: ICON_SIZE, x_align: Clutter.ActorAlign.CENTER}));
         const label = new St.Label({text: item.label, x_align: Clutter.ActorAlign.CENTER});
-        label.clutter_text.ellipsize = 3; // Pango.EllipsizeMode.END
+        label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         box.add_child(label);
 
         const btn = new St.Button({
@@ -543,17 +870,22 @@ export default class LogoOrbitExtension extends Extension {
         btn.connect('clicked', () => this._open(item.file));
         btn.connect('notify::hover', () => this._onItemHover(btn, item));
 
-        // Drag an item out of the circle onto the desktop.
+        // Drag an item out of the circle onto the desktop. The drag icon is
+        // created and destroyed by DND.
+        const drag = {icon: null};
         btn._delegate = {
             getDragActor: () => {
-                this._dragIcon = new St.Icon({gicon: item.icon, icon_size: ICON_SIZE});
-                return this._dragIcon;
+                drag.icon = new St.Icon({gicon: item.icon, icon_size: ICON_SIZE});
+                return drag.icon;
             },
             getDragActorSource: () => btn,
         };
         const draggable = DND.makeDraggable(btn);
-        draggable.connect('drag-begin', () => this._onItemDragBegin(item));
-        draggable.connect('drag-end', () => this._onItemDragEnd());
+        const dragIds = [
+            draggable.connect('drag-begin', () => this._onItemDragBegin(item, drag)),
+            draggable.connect('drag-end', () => this._onItemDragEnd(drag)),
+        ];
+        btn.connect('destroy', () => dragIds.forEach(id => draggable.disconnect(id)));
         return btn;
     }
 
@@ -561,7 +893,7 @@ export default class LogoOrbitExtension extends Extension {
         try {
             Gio.AppInfo.launch_default_for_uri(file.get_uri(), global.create_app_launch_context(0, -1));
         } catch (e) {
-            console.error('Logo Orbit: cannot open', e);
+            logError('cannot open', e);
         }
         this._hide();
     }
@@ -579,26 +911,26 @@ export default class LogoOrbitExtension extends Extension {
         this._cancelPeekTimer();
         if (!btn.hover || this._dragging || this._extDrag || this._blackHole)
             return;
+        let delay, action;
         if (this._peekItem) {
             if (this._peekItem.name === item.name)
                 return;
             // Just passing over it (e.g. on the way to the panel) keeps the panel.
-            this._peekId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PEEK_SWITCH_MS, () => {
-                this._peekId = 0;
-                if (btn.hover && this._visible && !this._dragging) {
-                    this._closePeek();
-                    this._onItemHover(btn, item);
-                }
-                return GLib.SOURCE_REMOVE;
-            });
+            delay = PEEK_SWITCH_MS;
+            action = () => {
+                this._closePeek();
+                this._onItemHover(btn, item);
+            };
+        } else if (item.isDir) {
+            delay = PEEK_DELAY_MS;
+            action = () => this._openPeek(btn, item);
+        } else {
             return;
         }
-        if (!item.isDir)
-            return;
-        this._peekId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PEEK_DELAY_MS, () => {
+        this._peekId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
             this._peekId = 0;
             if (btn.hover && this._visible && !this._dragging)
-                this._openPeek(btn, item);
+                action();
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -610,7 +942,7 @@ export default class LogoOrbitExtension extends Extension {
         const [bx] = btn.get_transformed_position();
         this._peekSide = bx + btn.width / 2 < this._geom.cx - 1 ? -1 : 1;
 
-        const peek = new St.BoxLayout({vertical: true, reactive: true, style_class: 'logo-orbit-peek'});
+        const peek = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, reactive: true, style_class: 'logo-orbit-peek'});
 
         // Header: back (inside a subfolder), the folder itself (click to open
         // it) and how many items it holds.
@@ -623,9 +955,9 @@ export default class LogoOrbitExtension extends Extension {
         const head = new St.BoxLayout({x_expand: true});
         const icon = new St.Icon({icon_size: PEEK_ICON_SIZE, y_align: Clutter.ActorAlign.CENTER});
         head.add_child(icon);
-        const titles = new St.BoxLayout({vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        const titles = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
         const title = new St.Label({style_class: 'logo-orbit-peek-title'});
-        title.clutter_text.ellipsize = 3; // Pango.EllipsizeMode.END
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         const count = new St.Label({style_class: 'logo-orbit-peek-count'});
         titles.add_child(title);
         titles.add_child(count);
@@ -638,7 +970,7 @@ export default class LogoOrbitExtension extends Extension {
         peek.add_child(top);
         peek.add_child(new St.Widget({style_class: 'logo-orbit-peek-sep', x_expand: true}));
 
-        const list = new St.BoxLayout({vertical: true, x_expand: true});
+        const list = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
         const scroll = new St.ScrollView({
             child: list,
             hscrollbar_policy: St.PolicyType.NEVER,
@@ -759,7 +1091,7 @@ export default class LogoOrbitExtension extends Extension {
             const row = new St.BoxLayout({x_expand: true});
             row.add_child(new St.Icon({gicon: entry.icon, icon_size: PEEK_ICON_SIZE, y_align: Clutter.ActorAlign.CENTER}));
             const label = new St.Label({text: entry.label, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
-            label.clutter_text.ellipsize = 3; // Pango.EllipsizeMode.END
+            label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
             row.add_child(label);
             const btn = new St.Button({style_class: 'logo-orbit-peek-row', child: row, x_expand: true});
             const file = folder.file.get_child(entry.name);
@@ -815,16 +1147,18 @@ export default class LogoOrbitExtension extends Extension {
         this._peekItem = null;
         this._peekStack = [];
         this._peekUi = null;
-        const peek = this._peek;
-        this._peek = null;
-        if (!peek)
+        if (!this._peek)
             return;
-        peek.reactive = false;
-        peek.remove_all_transitions();
+        this._peek.reactive = false;
+        this._peek.remove_all_transitions();
         if (!animate) {
-            peek.destroy();
+            this._peek.destroy();
+            this._peek = null;
             return;
         }
+        // Fade out, then destroy (this happens even if disabled meanwhile).
+        const peek = this._peek;
+        this._peek = null;
         peek.ease({
             opacity: 0,
             duration: 120,
@@ -933,22 +1267,14 @@ export default class LogoOrbitExtension extends Extension {
                 delay: (Math.max(0, (r0 - r) / slot) * FALL_STAGGER_MS + Math.random() * 500) * speed,
             };
         });
-        const close = () => this._closeBlackHole(hole, center);
-        if (falls.length === 0) {
-            const timeline = new Clutter.Timeline({actor: this._ring, duration: 1500});
-            timeline.connect('completed', () => {
-                if (this._holeTimeline === timeline) {
-                    this._holeTimeline = null;
-                    close();
-                }
-            });
-            this._holeTimeline = timeline;
-            timeline.start();
-            return;
-        }
 
-        // Accelerating inward spiral: tighter, faster and smaller as it falls.
+        // With nothing to swallow, the hole just spins for a moment.
+        const total = falls.length > 0 ? Math.round(Math.max(...falls.map(f => f.delay)) + fallMs) : 1500;
+
+        // Accelerating inward spiral: tighter, faster and smaller as it falls,
+        // with the photon ring spinning up as it swallows them.
         const frame = ms => {
+            this._spinTarget = SPIN_IDLE + (SPIN_SWALLOW - SPIN_IDLE) * Math.min(ms / total, 1) ** 1.5;
             for (const f of falls) {
                 const t = Math.min(Math.max((ms - f.delay) / fallMs, 0), 1);
                 const k = t * t;
@@ -960,19 +1286,14 @@ export default class LogoOrbitExtension extends Extension {
                 f.btn.opacity = Math.round(255 * (1 - k * k));
             }
         };
-        const total = Math.round(Math.max(...falls.map(f => f.delay)) + fallMs);
-        const timeline = new Clutter.Timeline({actor: this._ring, duration: total});
-        timeline.connect('new-frame', (tl, ms) => frame(ms));
-        timeline.connect('completed', () => {
+        this._holeTimeline = this._playTimeline(this._ring, total, frame, timeline => {
             frame(total);
             falls.forEach(f => f.btn.hide());
             if (this._holeTimeline === timeline) {
                 this._holeTimeline = null;
-                close();
+                this._closeBlackHole(hole, center);
             }
         });
-        this._holeTimeline = timeline;
-        timeline.start();
     }
 
     // Everything is swallowed: the dark disc and the hole collapse into the
@@ -1022,13 +1343,13 @@ export default class LogoOrbitExtension extends Extension {
 
     // --- Dragging items out of the circle ---
 
-    _onItemDragBegin(item) {
+    _onItemDragBegin(item, drag) {
         this._dragging = true;
         this._cancelPeekTimer();
         this._closePeek();
         this._dragMonitor = {
             dragDrop: event => {
-                if (event.dropActor !== this._dragIcon)
+                if (!drag.icon || event.dropActor !== drag.icon)
                     return DND.DragDropResult.CONTINUE;
                 const [x, y] = event.clutterEvent.get_coords();
                 // Dropped on the empty desktop: hand the item over to the desktop
@@ -1043,12 +1364,14 @@ export default class LogoOrbitExtension extends Extension {
         DND.addDragMonitor(this._dragMonitor);
     }
 
-    _onItemDragEnd() {
+    _onItemDragEnd(drag) {
         if (this._dragMonitor)
             DND.removeDragMonitor(this._dragMonitor);
         this._dragMonitor = null;
-        this._dragIcon = null;
+        drag.icon = null;
         this._dragging = false;
+        if (!this._active)
+            return; // disabled mid-drag
         this._reload();
         const [x, y] = global.get_pointer();
         if (!this._insideOrbit(x, y))
@@ -1060,11 +1383,16 @@ export default class LogoOrbitExtension extends Extension {
         const info = new Gio.FileInfo();
         info.set_attribute_string('metadata::nautilus-icon-position', '');
         info.set_attribute_string('metadata::nautilus-drop-position', `${Math.round(x)},${Math.round(y)}`);
-        try {
-            item.file.set_attributes_from_info(info, Gio.FileQueryInfoFlags.NONE, null);
-        } catch (e) {
-            console.error('Logo Orbit: cannot set drop position', e);
-        }
+        // Queued, so the reload after the drag (which waits for the queue)
+        // only shows the item on the desktop once its position is set.
+        this._queueIO(async () => {
+            try {
+                await item.file.set_attributes_async(info, Gio.FileQueryInfoFlags.NONE,
+                    GLib.PRIORITY_DEFAULT, null);
+            } catch (e) {
+                logError('cannot set drop position', e);
+            }
+        });
         // Rebuild once the drag has finished, not while its source is still in use.
         this._state.out.add(item.name);
     }
@@ -1080,7 +1408,7 @@ export default class LogoOrbitExtension extends Extension {
         if (!selection.get_mimetypes(type).includes('text/uri-list'))
             return;
         const stream = Gio.MemoryOutputStream.new_resizable();
-        selection.transfer_async(type, 'text/uri-list', -1, stream, null, (sel, res) => {
+        selection.transfer_async(type, 'text/uri-list', -1, stream, this._cancellable, (sel, res) => {
             try {
                 sel.transfer_finish(res);
                 stream.close(null);
@@ -1091,7 +1419,8 @@ export default class LogoOrbitExtension extends Extension {
                     this._disc?.add_style_class_name('logo-orbit-drop');
                 }
             } catch (e) {
-                console.error('Logo Orbit: cannot read dragged files', e);
+                if (!isCancelled(e))
+                    logError('cannot read dragged files', e);
             }
         });
     }
@@ -1112,54 +1441,73 @@ export default class LogoOrbitExtension extends Extension {
     // Desktop items just move back into the circle; files from elsewhere are
     // moved onto the Desktop (as dropping them on the desktop would), which
     // puts them in the circle.
-    _addToCircle(uris) {
-        let pending = 0;
-        const done = () => {
-            if (--pending <= 0)
-                this._reload();
-        };
+    async _addToCircle(uris) {
+        const cancellable = this._cancellable;
         const moves = [];
-        for (const uri of uris) {
-            const src = Gio.File.new_for_uri(uri);
-            if (src.get_parent()?.equal(this._desktop)) {
-                this._state.out.delete(src.get_basename());
-                continue;
+        try {
+            for (const uri of uris) {
+                const src = Gio.File.new_for_uri(uri);
+                if (src.get_parent()?.equal(this._desktop)) {
+                    this._state.out.delete(src.get_basename());
+                    continue;
+                }
+                if (!src.is_native())
+                    continue;
+                const taken = moves.map(m => m.dest.get_basename());
+                moves.push({src, dest: await this._freeName(src.get_basename(), taken, cancellable)});
             }
-            if (!src.is_native())
-                continue;
-            const taken = moves.map(m => m.dest.get_basename());
-            moves.push({src, dest: this._freeName(src.get_basename(), taken)});
+        } catch (e) {
+            if (!isCancelled(e))
+                logError('cannot check the Desktop for free names', e);
+            return;
         }
+        if (cancellable.is_cancelled())
+            return;
+
         // List the new names in `.hidden` before the files arrive, so the
         // desktop icons never show them (it caches `.hidden` for seconds).
         if (moves.length > 0) {
             const circle = [...this._circleItems().map(i => i.name), ...moves.map(m => m.dest.get_basename())];
             this._writeHidden([...this._userHidden], circle);
+            await this._ioQueue;
         }
-        for (const {src, dest} of moves) {
-            pending++;
-            src.move_async(dest, Gio.FileCopyFlags.NOFOLLOW_SYMLINKS, GLib.PRIORITY_DEFAULT, null, null, (s, res) => {
+        await Promise.all(moves.map(({src, dest}) => new Promise(resolve => {
+            src.move_async(dest, Gio.FileCopyFlags.NOFOLLOW_SYMLINKS, GLib.PRIORITY_DEFAULT, cancellable, null, (s, res) => {
                 try {
                     s.move_finish(res);
                 } catch (e) {
-                    Main.notifyError('Logo Orbit', `Couldn't move "${s.get_basename()}" to the Desktop: ${e.message}`);
+                    if (!isCancelled(e))
+                        Main.notifyError('Logo Orbit', `Couldn't move "${s.get_basename()}" to the Desktop: ${e.message}`);
                 }
-                done();
+                resolve();
             });
-        }
-        if (pending === 0)
-            this._reload();
+        })));
+        this._reload();
     }
 
     // A Desktop child named like `name`, adding " (2)", " (3)", ... if it's taken.
     // `taken` lists names already claimed by other files in the same drop.
-    _freeName(name, taken = []) {
+    async _freeName(name, taken, cancellable) {
         const dot = name.lastIndexOf('.');
         const [base, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
-        let file = this._desktop.get_child(name);
-        for (let n = 2; file.query_exists(null) || taken.includes(file.get_basename()); n++)
-            file = this._desktop.get_child(`${base} (${n})${ext}`);
-        return file;
+        for (let n = 1; ; n++) {
+            const file = this._desktop.get_child(n === 1 ? name : `${base} (${n})${ext}`);
+            if (!taken.includes(file.get_basename()) && !await this._exists(file, cancellable))
+                return file;
+        }
+    }
+
+    // Whether anything (even a broken symlink) has this name.
+    async _exists(file, cancellable) {
+        try {
+            await file.query_info_async('standard::type', Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
+                GLib.PRIORITY_DEFAULT, cancellable);
+            return true;
+        } catch (e) {
+            if (isNotFound(e))
+                return false;
+            throw e;
+        }
     }
 
     // --- Hover handling ---
@@ -1244,6 +1592,7 @@ export default class LogoOrbitExtension extends Extension {
         const o = this._overlay;
         o.remove_all_transitions();
         o.show();
+        this._startSpin();
         // The orbit's centre logo takes over from the wallpaper one.
         this._logo.opacity = 0;
         if (animate) {
@@ -1300,7 +1649,7 @@ export default class LogoOrbitExtension extends Extension {
             mode: Clutter.AnimationMode.EASE_IN_QUAD,
             onStopped: () => {
                 this._spinning = false;
-                if (this._visible)
+                if (this._visible || !this._active)
                     return;
                 this._overlayGone();
                 if (this._blackHole)
@@ -1316,7 +1665,11 @@ export default class LogoOrbitExtension extends Extension {
         o.remove_all_transitions();
         o.opacity = 0;
         o.hide();
+        this._stopSpin();
         this._logo.opacity = 255;
+        this._photon?.set_scale(1, 1);
+        if (this._photon)
+            this._photon.opacity = 255;
         this._ring?.set_scale(1, 1);
         if (this._ring)
             this._ring.opacity = 255;
@@ -1339,8 +1692,11 @@ export default class LogoOrbitExtension extends Extension {
     // Open or close the orbit: the centre logo spins one turn while every item
     // swirls out of it to its place (or back into it), one after another, and
     // the disc grows out of the logo (or shrinks back into it) with them.
+    // Opening, the photon ring bursts out past the disc's edge, spinning fast,
+    // behind a shockwave; closing, it spins up as it's pulled back in.
     _animateOrbit(opening, done) {
         const g = this._geom, ring = this._ring, disc = this._disc, center = this._center;
+        const photon = this._photon;
         if (!g || !ring || !disc || !center) {
             done();
             return;
@@ -1358,6 +1714,14 @@ export default class LogoOrbitExtension extends Extension {
         const icon = center.child;
         icon.remove_all_transitions();
         icon.set_pivot_point(0.5, 0.5);
+        photon?.remove_all_transitions();
+        if (opening) {
+            this._spinSpeed = SPIN_BURST;
+            this._spinTarget = SPIN_IDLE;
+            this._shockwave();
+        } else {
+            this._spinTarget = SPIN_SWALLOW / 2;
+        }
 
         // Inner rings come out first and go back in last.
         const btns = ring.get_children().filter(c => c._home);
@@ -1382,6 +1746,12 @@ export default class LogoOrbitExtension extends Extension {
             const d = opening ? easeOutCubic(p) : 1 - easeInCubic(p);
             disc.set_scale(k + (1 - k) * d, k + (1 - k) * d);
             disc.opacity = Math.round(255 * d);
+            if (photon) {
+                // Overshoots the disc's edge on the way out, then settles on it.
+                const s = k + (1 - k) * (opening ? easeOutBack(p) : d);
+                photon.set_scale(s, s);
+                photon.opacity = Math.round(255 * Math.min(1, d * 1.5));
+            }
             icon.rotation_angle_z = (opening ? 360 : -360) * easeInOutCubic(p);
             for (const it of items) {
                 const t = Math.min(Math.max((ms - it.delay) / itemMs, 0), 1);
@@ -1402,15 +1772,22 @@ export default class LogoOrbitExtension extends Extension {
             done();
         };
 
-        const timeline = new Clutter.Timeline({actor: this._overlay, duration: total});
-        timeline.connect('new-frame', (tl, ms) => frame(ms));
-        timeline.connect('completed', () => {
-            if (this._orbitAnim?.timeline === timeline)
+        frame(0);
+        const timeline = this._playTimeline(this._overlay, total, frame, tl => {
+            if (this._orbitAnim?.timeline === tl)
                 this._finishOrbitAnim();
         });
         this._orbitAnim = {timeline, finish};
-        frame(0);
+    }
+
+    // Call `frame(ms)` on every frame for `duration` ms, then `done(timeline)`.
+    // Stop the returned timeline to cancel it.
+    _playTimeline(actor, duration, frame, done) {
+        const timeline = new Clutter.Timeline({actor, duration});
+        timeline.connect('new-frame', (tl, ms) => frame(ms));
+        timeline.connect('completed', () => done(timeline));
         timeline.start();
+        return timeline;
     }
 
     // Jump a running open/close animation to its end.
