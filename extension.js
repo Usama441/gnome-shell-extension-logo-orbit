@@ -143,28 +143,30 @@ function spiralPath(cr, c, a0, len, r0, r1) {
 
 // Photon ring layers, drawn round centre `c` at radius `R`; `k` scales pixel sizes.
 
-// A soft orange glow with a thin hot core, brightest towards the top right.
+// A blazing orange band with a white-hot core, brightest towards the top
+// right, its light spilling into the smoke inside.
 function drawGlow(cr, c, R, k) {
-    const r0 = R - 28 * k, r1 = R + PHOTON_PAD * 0.9 * k;
+    const r0 = R - 48 * k, r1 = R + PHOTON_PAD * 0.9 * k;
     const at = r => (r - r0) / (r1 - r0);
     const glow = new Cairo.RadialGradient(c, c, r0, c, c, r1);
     glow.addColorStopRGBA(0, 1, 0.45, 0.1, 0);
-    glow.addColorStopRGBA(at(R - 7 * k), 1, 0.5, 0.12, 0.25);
-    glow.addColorStopRGBA(at(R), 1, 0.74, 0.38, 0.75);
-    glow.addColorStopRGBA(at(R + 6 * k), 1, 0.52, 0.14, 0.35);
-    glow.addColorStopRGBA(at(R + 24 * k), 0.85, 0.3, 0.1, 0.2);
+    glow.addColorStopRGBA(at(R - 18 * k), 1, 0.5, 0.12, 0.22);
+    glow.addColorStopRGBA(at(R - 6 * k), 1, 0.66, 0.26, 0.7);
+    glow.addColorStopRGBA(at(R), 1, 0.82, 0.5, 0.95);
+    glow.addColorStopRGBA(at(R + 8 * k), 1, 0.55, 0.15, 0.5);
+    glow.addColorStopRGBA(at(R + 26 * k), 0.9, 0.32, 0.08, 0.22);
     glow.addColorStopRGBA(1, 0.5, 0.2, 0.5, 0);
     cr.setSource(glow);
     cr.arc(c, c, r1, 0, 2 * Math.PI);
     cr.fill();
 
     const core = new Cairo.LinearGradient(c + R, c - R, c - R, c + R);
-    core.addColorStopRGBA(0, 1, 0.96, 0.82, 1);
-    core.addColorStopRGBA(0.5, 1, 0.76, 0.4, 0.85);
-    core.addColorStopRGBA(1, 1, 0.5, 0.2, 0.5);
+    core.addColorStopRGBA(0, 1, 0.98, 0.88, 1);
+    core.addColorStopRGBA(0.5, 1, 0.84, 0.5, 0.95);
+    core.addColorStopRGBA(1, 1, 0.6, 0.24, 0.7);
     cr.setSource(core);
-    cr.setLineWidth(2.5 * k);
-    cr.arc(c, c, R, 0, 2 * Math.PI);
+    cr.setLineWidth(5 * k);
+    cr.arc(c, c, R - 2 * k, 0, 2 * Math.PI);
     cr.stroke();
 }
 
@@ -183,16 +185,34 @@ function drawStreaks(cr, c, R, k) {
     }
 }
 
-// Faint smoke spiralling from the ring towards the middle.
+// Smoke filling the whole disc, spiralling from the ring down into a dark
+// centre: broad soft bands with fine bright strands over them.
 function drawWisps(cr, c, R, k) {
+    const shade = new Cairo.RadialGradient(c, c, 0, c, c, R);
+    shade.addColorStopRGBA(0, 0, 0, 0, 0.92);
+    shade.addColorStopRGBA(0.3, 0, 0, 0, 0.8);
+    shade.addColorStopRGBA(0.7, 0, 0, 0, 0.2);
+    shade.addColorStopRGBA(1, 0, 0, 0, 0);
+    cr.setSource(shade);
+    cr.arc(c, c, R, 0, 2 * Math.PI);
+    cr.fill();
+
     const rand = seededRandom(23);
+    cr.setLineCap(Cairo.LineCap.BUTT);
+    for (let i = 0; i < 70; i++) {
+        const grey = 0.7 + rand() * 0.3;
+        cr.setSourceRGBA(grey, grey * 0.95, grey * 0.9, 0.015 + rand() * 0.03);
+        cr.setLineWidth((14 + rand() * 30) * k);
+        spiralPath(cr, c, rand() * 2 * Math.PI, 1.4 + rand() * 2.2,
+            R * (0.9 + rand() * 0.08), R * (0.18 + rand() * 0.3));
+    }
     cr.setLineCap(Cairo.LineCap.ROUND);
-    for (let i = 0; i < 44; i++) {
-        const grey = 0.75 + rand() * 0.25;
-        cr.setSourceRGBA(grey, grey * 0.94, grey * 0.88, 0.015 + rand() * 0.035);
-        cr.setLineWidth((8 + rand() * 20) * k);
-        spiralPath(cr, c, rand() * 2 * Math.PI, 0.6 + rand() * 1.2,
-            R - (4 + rand() * 10) * k, R * (0.62 + rand() * 0.2));
+    for (let i = 0; i < 90; i++) {
+        const grey = 0.8 + rand() * 0.2;
+        cr.setSourceRGBA(grey, grey * 0.96, grey * 0.92, 0.035 + rand() * 0.08);
+        cr.setLineWidth((0.8 + rand() * 2.2) * k);
+        spiralPath(cr, c, rand() * 2 * Math.PI, 1 + rand() * 2.5,
+            R * (0.84 + rand() * 0.14), R * (0.25 + rand() * 0.4));
     }
 }
 
@@ -852,8 +872,8 @@ export default class LogoOrbitExtension extends Extension {
             btn.set_pivot_point(0.5, 0.5);
             btn.set_scale(0.3, 0.3);
             btn.opacity = 0;
-            btn.ease({scale_x: 1, scale_y: 1, opacity: 255, duration: 260,
-                mode: Clutter.AnimationMode.EASE_OUT_BACK});
+            btn.ease({scale_x: 1, scale_y: 1, duration: 260, mode: Clutter.AnimationMode.EASE_OUT_BACK});
+            btn.ease({opacity: 255, duration: 260, mode});
         }
     }
 
@@ -1309,10 +1329,15 @@ export default class LogoOrbitExtension extends Extension {
             return;
         const ring = this._ring;
         const mode = Clutter.AnimationMode.EASE_IN_BACK;
+        // Opacity gets its own easing: a back curve overshoots past 255, and
+        // the 8-bit opacity then wraps round, flashing the orbit off and on.
+        const fade = () => ({opacity: 0, duration: HOLE_CLOSE_MS, mode: Clutter.AnimationMode.EASE_IN_QUAD});
         const k = this._geom.r / this._geom.outer;
-        ring.ease({scale_x: k, scale_y: k, opacity: 0, duration: HOLE_CLOSE_MS, mode});
+        ring.ease({scale_x: k, scale_y: k, duration: HOLE_CLOSE_MS, mode});
+        ring.ease(fade());
         hole.remove_all_transitions();
-        hole.ease({scale_x: 0, scale_y: 0, opacity: 0, duration: HOLE_CLOSE_MS, mode});
+        hole.ease({scale_x: 0, scale_y: 0, duration: HOLE_CLOSE_MS, mode});
+        hole.ease(fade());
 
         // Finish the current turn and slow to a stop.
         const icon = center.child;
@@ -1321,8 +1346,9 @@ export default class LogoOrbitExtension extends Extension {
         icon.rotation_angle_z = angle;
         icon.ease({rotation_angle_z: 720, duration: HOLE_CLOSE_MS,
             mode: Clutter.AnimationMode.EASE_OUT_CUBIC});
+        center.ease({opacity: 255, duration: HOLE_CLOSE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
         center.ease({
-            scale_x: 1, scale_y: 1, opacity: 255,
+            scale_x: 1, scale_y: 1,
             duration: HOLE_CLOSE_MS,
             mode: Clutter.AnimationMode.EASE_OUT_BACK,
             onComplete: () => {

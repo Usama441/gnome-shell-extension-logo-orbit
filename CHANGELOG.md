@@ -3,6 +3,21 @@
 All notable changes to this extension are recorded here, newest first.
 The version number matches `"version"` in `metadata.json`.
 
+## [20] — 2026-10-09
+
+### Changed
+- **The disc looks like a black hole's photon ring.** Grey-white smoke now
+  fills the whole disc, spiralling in from the ring to a dark centre round
+  the logo, and the ring is a brighter orange band with a white-hot core.
+
+### Fixed
+- **The black hole's final collapse no longer flickers.** When the orbit
+  collapsed while the pointer was on it, the disc vanished, flashed back
+  faintly and reappeared before shrinking into the logo. Its fade used a
+  "back" easing that overshoots past full opacity, which wraps round to
+  nearly transparent. Fades now use their own smooth easing; the same fix
+  applies to the logo settling back and to new items popping in.
+
 ## [19] — 2026-10-09
 
 ### Changed
