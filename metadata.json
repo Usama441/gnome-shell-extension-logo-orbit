@@ -5,5 +5,6 @@
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/Usama441/gnome-shell-extension-logo-orbit",
   "settings-schema": "org.gnome.shell.extensions.logo-orbit",
-  "version": 20
+  "version": 21,
+  "version-name": "1.0.1"
 }

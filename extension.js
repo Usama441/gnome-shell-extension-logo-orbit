@@ -934,6 +934,14 @@ export default class LogoOrbitExtension extends Extension {
     // Resting on a folder opens the panel; resting on another item closes it.
     _onItemHover(btn, item) {
         this._cancelPeekTimer();
+        // The black hole only counts down while the pointer is resting on the
+        // orbit itself, not on an item or the folder panel.
+        if (this._visible && !this._blackHole) {
+            if (btn.hover)
+                this._cancelBlackHoleTimer();
+            else if (!this._orbitBusy())
+                this._armBlackHole();
+        }
         if (!btn.hover || this._dragging || this._extDrag || this._blackHole)
             return;
         let delay, action;
@@ -1175,16 +1183,17 @@ export default class LogoOrbitExtension extends Extension {
         this._peekUi = null;
         if (!this._peek)
             return;
-        this._peek.reactive = false;
-        this._peek.remove_all_transitions();
+        const peek = this._peek;
+        this._peek = null;
+        if (this._visible && !this._blackHole && !this._orbitBusy())
+            this._armBlackHole();
+        peek.reactive = false;
+        peek.remove_all_transitions();
         if (!animate) {
-            this._peek.destroy();
-            this._peek = null;
+            peek.destroy();
             return;
         }
         // Fade out, then destroy (this happens even if disabled meanwhile).
-        const peek = this._peek;
-        this._peek = null;
         peek.ease({
             opacity: 0,
             duration: 120,
@@ -1210,6 +1219,11 @@ export default class LogoOrbitExtension extends Extension {
         this._holeId = 0;
     }
 
+    // The folder panel is open or the pointer is on an item.
+    _orbitBusy() {
+        return !!this._peek || !!this._ring?.get_children().some(c => c._itemName && c.hover);
+    }
+
     _armBlackHole(ms = this._settings.get_int('black-hole-delay') * 1000) {
         this._cancelBlackHoleTimer();
         if (!this._settings.get_boolean('black-hole-enabled'))
@@ -1221,6 +1235,9 @@ export default class LogoOrbitExtension extends Extension {
             // Don't pull the rug out from under a drag; try again shortly.
             if (this._dragging || this._extDrag)
                 this._armBlackHole(1000);
+            // Normally paused by `_onItemHover()`; start the full wait again.
+            else if (this._orbitBusy())
+                this._armBlackHole();
             else
                 this._startBlackHole();
             return GLib.SOURCE_REMOVE;
