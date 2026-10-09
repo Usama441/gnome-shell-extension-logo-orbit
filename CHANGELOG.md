@@ -1,9 +1,21 @@
 # Changelog — Logo Orbit (`logo-orbit@usama`)
 
 All notable changes to this extension are recorded here, newest first.
-The version number matches `"version"` in `metadata.json`.
+From 1.0.1 on, versions are `MAJOR.MINOR.PATCH` (`"version-name"` in
+`metadata.json`), with the build number (`"version"`) in brackets. Version 20
+is 1.0.0. Bug-fix releases raise the last number, new features the middle one.
 
-## [20] — 2026-10-09
+## [1.0.1] (build 21) — 2026-10-09
+
+### Fixed
+- **The black hole no longer starts while you're browsing a folder.** Its
+  countdown kept running while a folder panel was open or the pointer was on
+  an item, so the orbit could collapse in the middle of looking inside a
+  folder. It now counts down only while the pointer is resting on the orbit
+  itself, and starts again from the full delay each time you leave an item
+  or close a folder panel.
+
+## [20] — 2026-10-09 (1.0.0)
 
 ### Changed
 - **The disc looks like a black hole's photon ring.** Grey-white smoke now
