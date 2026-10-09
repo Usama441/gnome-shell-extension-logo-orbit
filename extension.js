@@ -13,6 +13,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {getPointerWatcher} from 'resource:///org/gnome/shell/ui/pointerWatcher.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+// St.BoxLayout gained `orientation` in GNOME 48; older versions use `vertical`.
+const VERTICAL = 'orientation' in St.BoxLayout.prototype
+    ? {orientation: Clutter.Orientation.VERTICAL}
+    : {vertical: true};
+
 // Logo position inside the wallpaper image, as fractions of its size
 // (measured from moskalenko-v-Snowy_Ubuntu_*.webp, 3840x2160).
 const WALLPAPER_MATCH = 'Snowy_Ubuntu';
@@ -853,7 +858,7 @@ export default class LogoOrbitExtension extends Extension {
     }
 
     _makeItem(item, x, y) {
-        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_align: Clutter.ActorAlign.CENTER});
+        const box = new St.BoxLayout({...VERTICAL, x_align: Clutter.ActorAlign.CENTER});
         box.add_child(new St.Icon({gicon: item.icon, icon_size: ICON_SIZE, x_align: Clutter.ActorAlign.CENTER}));
         const label = new St.Label({text: item.label, x_align: Clutter.ActorAlign.CENTER});
         label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
@@ -942,7 +947,7 @@ export default class LogoOrbitExtension extends Extension {
         const [bx] = btn.get_transformed_position();
         this._peekSide = bx + btn.width / 2 < this._geom.cx - 1 ? -1 : 1;
 
-        const peek = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, reactive: true, style_class: 'logo-orbit-peek'});
+        const peek = new St.BoxLayout({...VERTICAL, reactive: true, style_class: 'logo-orbit-peek'});
 
         // Header: back (inside a subfolder), the folder itself (click to open
         // it) and how many items it holds.
@@ -955,7 +960,7 @@ export default class LogoOrbitExtension extends Extension {
         const head = new St.BoxLayout({x_expand: true});
         const icon = new St.Icon({icon_size: PEEK_ICON_SIZE, y_align: Clutter.ActorAlign.CENTER});
         head.add_child(icon);
-        const titles = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        const titles = new St.BoxLayout({...VERTICAL, x_expand: true, y_align: Clutter.ActorAlign.CENTER});
         const title = new St.Label({style_class: 'logo-orbit-peek-title'});
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         const count = new St.Label({style_class: 'logo-orbit-peek-count'});
@@ -970,7 +975,7 @@ export default class LogoOrbitExtension extends Extension {
         peek.add_child(top);
         peek.add_child(new St.Widget({style_class: 'logo-orbit-peek-sep', x_expand: true}));
 
-        const list = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
+        const list = new St.BoxLayout({...VERTICAL, x_expand: true});
         const scroll = new St.ScrollView({
             child: list,
             hscrollbar_policy: St.PolicyType.NEVER,
@@ -1015,7 +1020,8 @@ export default class LogoOrbitExtension extends Extension {
         title.text = folder.label;
         count.text = 'Loading…';
         list.destroy_all_children();
-        scroll.vadjustment.value = 0;
+        // `vadjustment` is new in GNOME 46.
+        (scroll.vadjustment ?? scroll.vscroll.adjustment).value = 0;
         this._placePeek();
         this._readFolder(folder.file, (infos, error) => this._fillPeek(folder, infos, error));
     }
